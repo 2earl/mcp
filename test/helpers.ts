@@ -19,26 +19,34 @@ export const NOTES: Upstream = {
   scopes: { read: 'mcp:notes.read', write: 'mcp:notes.write', admin: 'mcp:notes.admin' },
 };
 
-/** Token → what login's validateToken would say. */
-export const TOKENS = new Map<string, { uid: string; clientId: string; scope: string[] }>();
+/** Token → what login's validateToken would say, and the one address it was issued for. */
+export const TOKENS = new Map<
+  string,
+  { uid: string; clientId: string; scope: string[]; resource: string }
+>();
 
 export function issueToken(
   scope: string[],
   uid = 'user-1',
   clientId = 'https://app.example/client.json',
+  resource = `${ORIGIN}/mcp`,
 ) {
   const token = `t-${crypto.randomUUID()}`;
-  TOKENS.set(token, { uid, clientId, scope });
+  TOKENS.set(token, { uid, clientId, scope, resource });
   return token;
 }
+
+/** The gateway's addresses login knows: /mcp, and one per service. */
+const KNOWN_RESOURCES = new Set([`${ORIGIN}/mcp`, `${ORIGIN}/notes`]);
 
 /** Stand-in for login's validateToken over the Service Binding. */
 function validator() {
   return (resource: string, token: string) => {
-    if (resource !== env.RESOURCE)
+    if (!KNOWN_RESOURCES.has(resource))
       throw new Error('resource must name one registered protected resource');
     const grant = TOKENS.get(token);
-    if (!grant) return Promise.resolve(null);
+    // A token is valid only at the address it was issued for (RFC 8707).
+    if (grant?.resource !== resource) return Promise.resolve(null);
     return Promise.resolve({
       audience: resource,
       userId: grant.uid,
@@ -146,8 +154,9 @@ export async function mcpClient(
   worker: ReturnType<typeof makeWorker>,
   requestEnv: Env,
   token: string,
+  path = '/mcp',
 ): Promise<Client> {
-  const transport = new StreamableHTTPClientTransport(new URL(`${ORIGIN}/mcp`), {
+  const transport = new StreamableHTTPClientTransport(new URL(`${ORIGIN}${path}`), {
     fetch: (url, init) => {
       const headers = new Headers(init?.headers);
       headers.set('Authorization', `Bearer ${token}`);

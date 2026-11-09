@@ -48,31 +48,79 @@ const loginValidator: ValidatorFor = (env) => {
   return (resource, token) => login.validateToken(resource, token);
 };
 
+/** Paths the gateway keeps for itself: no service may use them as its id. */
+const RESERVED = new Set(['mcp', 'healthz', '.well-known']);
+
+interface Endpoint {
+  /** `/mcp`, or `/<service id>`. */
+  path: string;
+  name: string;
+  upstreams: readonly Upstream[];
+  mode: 'all' | 'single';
+}
+
+/**
+ * The gateway's addresses (docs/DESIGN.md §3): `/mcp` with every service, and `/<id>` with one
+ * service alone, the address its directory listing uses. Each is its own OAuth resource, so a
+ * token for one is useless at the others.
+ */
+function endpointsFor(upstreams: readonly Upstream[]): Endpoint[] {
+  for (const upstream of upstreams) {
+    if (RESERVED.has(upstream.id) || !/^[a-z][a-z0-9-]*$/.test(upstream.id)) {
+      throw new Error(`service id "${upstream.id}" can't be a gateway path`);
+    }
+  }
+  return [
+    { path: '/mcp', name: '2earl MCP gateway', upstreams, mode: 'all' },
+    ...upstreams.map((u) => ({
+      path: `/${u.id}`,
+      name: u.name,
+      upstreams: [u],
+      mode: 'single' as const,
+    })),
+  ];
+}
+
 /** The Worker's fetch, with its dependencies explicit (tests pass their own). */
 export function createWorker(deps: {
   upstreams: readonly Upstream[];
   now: () => number;
   validator: ValidatorFor;
 }) {
-  const gateway = createGateway({ upstreams: deps.upstreams, now: deps.now });
+  const endpoints = endpointsFor(deps.upstreams).map((endpoint) => ({
+    ...endpoint,
+    gateway: createGateway({ upstreams: endpoint.upstreams, now: deps.now, mode: endpoint.mode }),
+  }));
   const resourceServers = new Map<string, OAuthResourceServer<Env, GrantProps>>();
-  const resourceServer = (env: Env): OAuthResourceServer<Env, GrantProps> => {
-    let server = resourceServers.get(env.RESOURCE);
+
+  /** The endpoint a request is for: its MCP path, or its RFC 9728 metadata path. */
+  const endpointFor = (pathname: string) =>
+    endpoints.find(
+      (e) => pathname === e.path || pathname === `/.well-known/oauth-protected-resource${e.path}`,
+    );
+
+  const resourceServer = (env: Env, endpoint: (typeof endpoints)[number]) => {
+    const resource = `${new URL(env.RESOURCE).origin}${endpoint.path}`;
+    let server = resourceServers.get(resource);
     if (server) return server;
     server = new OAuthResourceServer<Env, GrantProps>({
       resourceMetadata: {
-        resource: env.RESOURCE,
+        resource,
         authorization_servers: [env.AUTHORIZATION_SERVER],
         bearer_methods_supported: ['header'],
-        resource_name: '2earl MCP gateway',
+        resource_name: endpoint.name,
       },
-      // Every scope, so an assistant can ask for all of them at its first sign-in; the user
-      // chooses on login's consent page. Step-up (403) still covers clients that ask for less.
-      requiredScopes: [TOOLS_READ, ...deps.upstreams.flatMap((u) => Object.values(u.scopes))],
+      // Every scope of the endpoint, so an assistant can ask for all of them at its first
+      // sign-in; the user chooses on login's consent page. Step-up (403) still covers clients
+      // that ask for less. A service's own address needs no gateway scope.
+      requiredScopes: [
+        ...(endpoint.mode === 'all' ? [TOOLS_READ] : []),
+        ...endpoint.upstreams.flatMap((u) => Object.values(u.scopes)),
+      ],
       validateToken: deps.validator,
-      handler: gateway,
+      handler: endpoint.gateway,
     });
-    resourceServers.set(env.RESOURCE, server);
+    resourceServers.set(resource, server);
     return server;
   };
 
@@ -85,7 +133,14 @@ export function createWorker(deps: {
     if (url.pathname === '/') {
       return withHeaders(Response.redirect('https://2earl.com', 302), SECURITY_HEADERS);
     }
-    const response = await resourceServer(env).fetch(request, env, ctx);
+    const endpoint = endpointFor(url.pathname);
+    if (!endpoint) {
+      return withHeaders(new Response('Not found', { status: 404 }), {
+        ...SECURITY_HEADERS,
+        ...CORS_HEADERS,
+      });
+    }
+    const response = await resourceServer(env, endpoint).fetch(request, env, ctx);
     return withHeaders(response, { ...SECURITY_HEADERS, ...CORS_HEADERS });
   };
 }
