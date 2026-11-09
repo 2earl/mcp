@@ -245,6 +245,42 @@ describe('tool pinning', () => {
   });
 });
 
+describe('opening an address in a browser', () => {
+  const visit = (path: string, accept = 'text/html,application/xhtml+xml') =>
+    call(worker, testEnv, new Request(`${ORIGIN}${path}`, { headers: { Accept: accept } }));
+
+  it('explains the address, keeping the challenge an assistant would get', async () => {
+    const response = await visit('/mcp');
+    expect(response.status).toBe(401);
+    expect(response.headers.get('WWW-Authenticate')).toContain('resource_metadata=');
+    expect(response.headers.get('Content-Type')).toContain('text/html');
+    expect(response.headers.get('Content-Security-Policy')).toContain("default-src 'none'");
+    const page = await response.text();
+    expect(page).toContain('<code>https://mcp.2earl.com/mcp</code>');
+    expect(page).toContain('Add custom connector');
+    expect(page).toContain('<strong>Notes</strong>');
+    const own = await (await visit('/notes')).text();
+    expect(own).toContain('Notes for your AI assistant');
+    expect(own).toContain('<code>https://mcp.2earl.com/notes</code>');
+  });
+
+  it('changes nothing for MCP clients, and gives browsers a page for unknown paths', async () => {
+    const client = await visit('/mcp', 'text/event-stream');
+    expect(client.status).toBe(401);
+    expect(client.headers.get('Content-Type') ?? '').not.toContain('text/html');
+    const withToken = await call(
+      worker,
+      testEnv,
+      new Request(`${ORIGIN}/mcp`, { headers: { Accept: 'text/html', Authorization: 'Bearer x' } }),
+    );
+    expect(withToken.headers.get('Content-Type') ?? '').not.toContain('text/html');
+    const missing = await visit('/nope');
+    expect(missing.status).toBe(404);
+    expect(await missing.text()).toContain('There’s nothing at this address');
+    expect(await (await visit('/nope', '*/*')).text()).toBe('Not found');
+  });
+});
+
 describe('prompts', () => {
   const texts = (result: { messages: { content: unknown }[] }) =>
     result.messages.map((m) => (m.content as { text: string }).text);
