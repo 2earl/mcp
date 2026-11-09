@@ -20,7 +20,11 @@
 
   // login's WorkerEntrypoint: validateToken (docs/GATEWAY_INTEGRATION.md in 2earl/login).
   // Services behind the gateway (src/upstreams.ts) add their bindings here.
-  "services": [{ "binding": "AUTH_SERVER", "service": "login" }],
+  "services": [
+    { "binding": "AUTH_SERVER", "service": "login" },
+    // Services behind the gateway (src/upstreams.ts), each at its GatewayMcp entrypoint.
+    { "binding": "PROMPTSHARE", "service": "promptshare", "entrypoint": "GatewayMcp" },
+  ],
 
   // Per user: 120 MCP requests a minute.
   "ratelimits": [

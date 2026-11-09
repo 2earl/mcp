@@ -12,7 +12,12 @@ export default defineConfig(async () => {
         miniflare: {
           bindings: { TEST_MIGRATIONS: migrations },
           // login isn't running in tests: token validation is a stand-in (test/helpers.ts).
-          serviceBindings: { AUTH_SERVER: () => new Response('not in tests', { status: 500 }) },
+          // Services behind the gateway are stand-ins too (test/helpers.ts fakeUpstream), passed
+          // per test; the production binding only has to exist.
+          serviceBindings: {
+            AUTH_SERVER: () => new Response('not in tests', { status: 500 }),
+            PROMPTSHARE: () => new Response('not in tests', { status: 500 }),
+          },
         },
       }),
     ],

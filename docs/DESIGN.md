@@ -100,7 +100,9 @@ gateway therefore:
 - gives each service its own namespace, `mcp:<service>.<permission>`;
 - requires every service to have at least `read` and `write`;
 - lets a service add more where one approval would be too broad. For example, prompt-share could
-  have `mcp:prompts.publish` for making a prompt public, separate from editing your own.
+  have `mcp:promptshare.publish` for making a prompt public, separate from editing your own. (It
+  doesn't: publishing is a website-only action there. Its set is `mcp:promptshare.read`, `.write`,
+  `.state`.)
 
 | Scope | Allows | Declared |
 |---|---|---|
@@ -140,7 +142,7 @@ Each service is declared in code:
 - its scopes.
 
 Adding a service is a pull request here, plus a binding in `wrangler.jsonc`, plus its scopes in
-login's registry. M1 ships the list empty; prompt-share's entry is ready in a comment.
+login's registry. The list has Prompt share (2earl/promptshare).
 
 `tools/list` asks every service in parallel and shows each one's tools prefixed and titled with
 the service's name ("Prompt share: Search prompts"). A service that fails or times out (25 s) is
@@ -221,7 +223,7 @@ Full table in [THREAT_MODEL.md](THREAT_MODEL.md). The main controls:
 3. "Download your data" calls `exportUser` on every registered service that has a binding.
 
 **prompt-share** (M2): implements UPSTREAM_CONTRACT. Then a login PR adds its scopes
-(`mcp:prompts.*`) to the `mcp` entry and registers prompt-share itself with its deletion binding.
+(`mcp:promptshare.*`) to the `mcp` entry and registers prompt-share itself with its deletion binding.
 
 **2earl.com:** the privacy policy covers the gateway and each service before launch.
 
@@ -261,7 +263,7 @@ The gateway's `trust: 'third-party'` hiding and its scope model already apply to
 | Phase | Deliverable | State |
 |---|---|---|
 | M0 | Design and threat model | Done (PR #1) |
-| M1 | Worker: auth via login, `whoami`, service plumbing (bindings, scopes, step-up, pinning, audit), `AccountEvents` delete and export; CI, deploy, Terraform. Then login's binding and export hook | Built; deployment pending |
-| M2 | prompt-share's `GatewayMcp` (its repository); its entry here; its scopes and deletion in login | Waits for prompt-share |
+| M1 | Worker: auth via login, `whoami`, service plumbing (bindings, scopes, step-up, pinning, audit), `AccountEvents` delete and export; CI, deploy, Terraform. Then login's binding and export hook | Done; deployed |
+| M2 | prompt-share's `GatewayMcp` (its repository); its entry here; its scopes and deletion in login. The resource metadata advertises every service's scopes, so assistants can ask for them at first sign-in | Built; waits for promptshare's deploy |
 | M3 | Owner page for held tools; a real assistant end to end (browser test through consent); privacy policy; launch | |
 | Later | Third-party MCP servers (§9) | When one is wanted |

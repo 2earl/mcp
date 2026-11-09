@@ -28,12 +28,21 @@ export interface Upstream {
   scopes: { read: string; write: string; [name: string]: string };
 }
 
-/**
- * Production list. Empty until prompt-share exists; its entry will look like:
- * `{ id: 'prompts', name: 'Prompt share', binding: 'PROMPT_SHARE', trust: 'first-party',
- *    scopes: { read: 'mcp:prompts.read', write: 'mcp:prompts.write' } }`
- */
-export const UPSTREAMS: readonly Upstream[] = [];
+/** Production list. Each service's scopes are declared, with consent wording, in login's registry. */
+export const UPSTREAMS: readonly Upstream[] = [
+  {
+    // 2earl/promptshare: prompts and shared sessions.
+    id: 'promptshare',
+    name: 'Prompt share',
+    binding: 'PROMPTSHARE',
+    trust: 'first-party',
+    scopes: {
+      read: 'mcp:promptshare.read',
+      write: 'mcp:promptshare.write',
+      state: 'mcp:promptshare.state',
+    },
+  },
+];
 
 /** Separates the service prefix from the tool name. MCP tool names allow `_`. */
 export const PREFIX_SEPARATOR = '__';
