@@ -1,51 +1,60 @@
 # 2earl MCP gateway: threat model
 
-Status: proposal, with [DESIGN.md](DESIGN.md). Threats owned by the authorization server
-(sign-in, consent, token issuance, second factor) are in
+Status: M1, with [DESIGN.md](DESIGN.md). Threats owned by the authorization server (sign-in,
+consent, token issuance, second factor) are in
 [login's threat model](https://github.com/2earl/login/blob/main/docs/THREAT_MODEL.md).
 
 ## Assets
 
-1. **Upstream credentials:** users' access and refresh tokens for GitHub, Notion and the other
-   allowed upstreams. The most valuable asset here: they act as the user outside 2earl.
-2. **Tool traffic:** arguments and results. Never stored, but in memory on every call.
-3. **Gateway sessions:** the `/connections` cookie.
-4. **Integrity of tool definitions** shown to assistants.
+1. **Users' data in the services behind the gateway** (prompt-share first), reachable through
+   tool calls.
+2. **Tool traffic:** arguments and results. In memory on every call, never stored.
+3. **Integrity of tool definitions** shown to assistants.
+4. **The security log** (`audit_events`).
 5. Availability of the endpoint.
 
 ## Trust boundaries
 
-- MCP client → gateway: an untrusted client with a login-issued token.
+- MCP client → gateway: an untrusted client holding a login-issued token.
 - Gateway → login: Service Binding RPC, same Cloudflare account.
-- Gateway → upstreams: the Internet; upstream servers are partly trusted (owner allowlist), and
-  their tool descriptions and results are untrusted content.
-- Browser → gateway web pages: an untrusted browser with a 2earl session.
+- Gateway → first-party services: Service Binding to a named entrypoint, same account. The
+  service trusts the gateway's identity headers; nothing outside the account can reach the
+  entrypoint.
+- Tool definitions and results: content from a service. Trusted as code for first-party services,
+  untrusted for third-party ones. Untrusted as model input for both, because results may carry
+  text users or others wrote.
 
 ## Threats and controls
 
-| Threat | Control | Verified by (planned) |
+| Threat | Control | Verified by |
 |---|---|---|
-| Token passthrough / audience confusion | Only tokens for `https://mcp.2earl.com/mcp`, validated by login; the 2earl token is never forwarded; upstreams get their own tokens only | Unit tests; launch checklist |
-| Confused deputy through an upstream (MCP security guide) | Upstream connection only from the gateway's own page after the user presses Connect; `state` created after that click, bound to the gateway session, single use, 10 min; no consent cookies of ours that skip anything | Browser test: crafted connect links do nothing |
-| Login CSRF on connect (attacker's upstream account attached to the victim) | `state` bound to the session that started the flow; callback refuses another session | Unit test |
-| SSRF through discovery or token endpoints | Upstreams only from the code allowlist; discovered URLs must be `https`; `global_fetch_strictly_public`; no redirects on token requests | Unit tests with hostile metadata |
-| Theft of stored upstream tokens (database dump, backup) | AES-256-GCM with a key held as a Worker secret, associated data = `uid` + upstream; tokens never in logs, errors or responses | Unit test: rows don't contain plaintext |
-| Cross-user access (one user's call uses another's upstream token) | Connection looked up by the `uid` from the validated token only; no client-supplied user IDs or handles | Unit tests |
-| Tool poisoning, rug pull (changed tool descriptions or schemas) | Tool allowlist per upstream; hash pinning; changed tools hidden until the owner re-approves; audited | Unit tests |
-| Prompt injection in tool results | Not preventable by filtering. The gateway labels results by source, limits size, never chains calls itself; the assistant and user decide | Documented residual risk |
-| An assistant uses an account the user didn't mean it to | Per-upstream scopes on login's consent page (if accepted); user disconnects at `/connections`; revoking the assistant at login | Browser test |
-| Expired or revoked upstream tokens loop | One refresh attempt per call; then "reconnect" state and a clear error | Unit tests |
-| Data left behind after account deletion | `AccountEvents.deleteUser`, retried by login until it succeeds; idempotent | Unit test; login's admin view |
-| Abuse and cost (many calls, large results) | Per-user and per-network rate limits; timeouts; response-size caps | Unit tests |
-| Clickjacking or XSS on `/connections` | CSP without scripts, `frame-ancestors 'none'`, escaped output, same headers as login | Header tests |
-| Supply chain (MCP SDK, OAuth library) | Exact versions, 24 h release delay, Dependabot, CodeQL, lockfile | CI |
+| Token passthrough / audience confusion | Only tokens for `https://mcp.2earl.com/mcp` from login; validated over the binding; replaced by `[validated]` before MCP handling; services get headers, never the token | `gateway.test.ts`: services never see `Authorization` or the token |
+| Forged identity headers | Only the gateway's binding reaches `GatewayMcp`; services must ignore `X-2earl-*` on public routes (UPSTREAM_CONTRACT §2) | Each service's tests |
+| A service learns permissions meant for another | Each service is told only its own scopes | Test: another service's scope isn't passed on |
+| Calling a tool without its permission | Scope from the pinned definition; `403 insufficient_scope` before the service is called; checked again in the handler; unannotated tools need `write` | Tests: step-up, write implies read, tool-named scope |
+| Tool poisoning, rug pull | Hash over everything the model sees and the scope; third-party changes hidden until approved; first-party changes audited | Tests: hidden, approved, hidden again; first-party audited |
+| Cross-user access | The user comes from the validated token only; services key data by `X-2earl-User`, never by argument | Gateway tests; each service's tests |
+| SSRF | Services are a code list reached over bindings; no URL from users or metadata is fetched; `global_fetch_strictly_public`; same-origin redirects only | Review; config |
+| Prompt injection in tool results | Not preventable by filtering. No chaining by the gateway; results labelled by service through tool titles | Documented residual risk |
+| Data left behind after account deletion | Gateway and each service answer login's outbox themselves; idempotent; login retries every 15 minutes | Test: delete and retry |
+| Who-did-what kept forever | Audit entries re-keyed on deletion; deleted after 90 days | Test; daily cron |
+| Sensitive data in logs | Audit stores tool names and outcomes, never arguments or results; Worker observability off | Test: written text absent from the log |
+| Abuse and cost | Per-user rate limit (120/min); 25 s per service call; tool lists capped at 500 | Config; tests for a failing service |
+| A failing service hides everything | Services listed in parallel, failures dropped; `whoami` always answers | Test |
+| Supply chain (MCP SDK, OAuth library) | Exact versions, 24 h release delay, Dependabot, CodeQL, lockfile, `pnpm audit` in CI | CI |
 
-## Residual risks (proposed)
+## Residual risks
 
-- **Prompt injection** through upstream content stays possible. It is a property of letting a
-  model read third-party data.
-- **Upstream providers** see the gateway's IP and the user's actions on their own service, under
-  their own terms.
-- **A compromise of the Worker or of `UPSTREAM_TOKEN_KEY`** exposes every stored upstream token.
-  Mitigation: the key is only in the production environment; tokens are scoped as narrowly as
-  each upstream allows.
+- **Prompt injection** through content users wrote (a shared prompt, for example) stays possible.
+  It is a property of letting a model read that content.
+- **A compromised Worker in the 2earl Cloudflare account**, or a compromised account, could bind to
+  a service's `GatewayMcp` and act as any user. Mitigation: account access is limited to the owner and
+  one trusted administrator (accepted risk R1 in login); deploys need the owner's approval.
+- **A compromised first-party deploy** changes tools at once (no hiding). It could already read
+  and change that service's data, so hiding would not contain it; the change is audited.
+
+## Later (third-party servers, DESIGN.md §9)
+
+Adds: stored upstream tokens (encryption, binding to user and server), the confused deputy on
+connect, login CSRF on connect, SSRF through OAuth discovery, refresh loops. Controls are
+sketched in DESIGN.md §9 and get their own rows here when that phase starts.

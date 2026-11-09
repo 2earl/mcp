@@ -1,278 +1,267 @@
 # 2earl MCP gateway: design
 
-Status: **proposal for review.** No gateway code exists yet. Decisions marked **open** need the
-owner before the phase that depends on them.
+Status: **M1 built** (gateway, CI, deploy, Terraform). Not deployed until the first-deployment
+steps in [infra/README.md](../infra/README.md) are done.
 
-Related: [2earl/login](https://github.com/2earl/login), the authorization server, and its
-[GATEWAY_INTEGRATION.md](https://github.com/2earl/login/blob/main/docs/GATEWAY_INTEGRATION.md),
-the contract this design builds on. Specification: MCP revision **2026-07-28**.
+Related:
+- [2earl/login](https://github.com/2earl/login), the authorization server;
+- login's [GATEWAY_INTEGRATION.md](https://github.com/2earl/login/blob/main/docs/GATEWAY_INTEGRATION.md),
+  the contract this design builds on;
+- [UPSTREAM_CONTRACT.md](UPSTREAM_CONTRACT.md), what a 2earl service implements to appear
+  behind the gateway.
+
+Specification: MCP revision **2026-07-28**.
 
 ## 1. What the gateway does
 
-One MCP endpoint, `https://mcp.2earl.com/mcp`, that an AI assistant (Claude, Cursor, any MCP
-client) connects to with a 2earl account. Behind it:
+There is one MCP endpoint, `https://mcp.2earl.com/mcp`. An AI assistant (Claude, Cursor, any MCP
+client) connects to it with a 2earl account, and behind it are the MCP servers of **2earl's own
+services**. The first of these is **prompt-share**, which exposes its own MCP server. The
+assistant sees one server and one sign-in.
 
-- **2earl's own tools**, implemented in the gateway.
-- **Connected MCP servers ("upstreams")**: remote MCP servers the owner allows (for example
-  GitHub or Notion). A user connects their own account at each upstream once, on
-  `mcp.2earl.com`; the gateway then offers that upstream's tools under a prefix and calls them
-  with the user's own upstream credentials.
+The gateway itself has one tool, `whoami`: which account, which app, which permissions. Every
+other tool belongs to a service.
 
-The assistant sees one server and one sign-in. The user decides:
-- which assistants may use the gateway (at login.2earl.com);
-- which upstream accounts are connected (at mcp.2earl.com).
+Third-party MCP servers (GitHub, Notion, …), each reached with the user's own account there, are
+a later phase (§9). Nothing in M1 depends on them.
 
 ## 2. Decisions
 
 | # | Decision | By |
 |---|---|---|
 | G1 | Own repository `2earl/mcp`, public, AGPL-3.0, same protections as login | Owner, 2026-11-09 |
-| G2 | Built in this session; both own tools and proxied upstreams | Owner, 2026-11-09 |
-| G3 | Resource `https://mcp.2earl.com/mcp`; tokens from login only, validated over a Service Binding | Owner, 2026-11-09 (login) |
-| G4 | Deleting a 2earl account deletes the user's gateway data (`AccountEvents.deleteUser`) | Owner, 2026-11-09 (login) |
-| G5 | Each service has its own permissions; the gateway's are declared in login's registry | Owner, 2026-11-09 (login) |
-| G6 | Stateless MCP (2026-07-28): no protocol sessions, no Durable Objects for the protocol | Proposed |
-| G7 | Upstreams are a code-reviewed allowlist in this repo, never a URL a user types | Proposed |
-| G8 | Upstream credentials are stored encrypted, per user, in D1 (EU), and never leave the gateway | Proposed |
+| G2 | Both proxied services and own tools | Owner, 2026-11-09 |
+| G3 | Resource `https://mcp.2earl.com/mcp`; tokens from login only, validated over a Service Binding | Owner, 2026-11-09 |
+| G4 | Deleting a 2earl account deletes the user's data in the gateway **and in every service behind it** | Owner, 2026-11-09 |
+| G5 | Each service has its own permission set | Owner, 2026-11-09 |
+| G6 | First service: prompt-share, 2earl's own, exposing its own MCP server | Owner, 2026-11-09 |
+| G7 | Changed tools are hidden until the owner approves them: **for third-party services**. First-party changes are offered at once and audited (§5.2) | Owner (hiding), 2026-11-09; first-party exception proposed |
+| G8 | The gateway's data is part of login's "Download your data" | Owner, 2026-11-09 |
+| G9 | Per-service scopes `mcp:<service>.<permission>`; `mcp:tools.invoke` dropped (§4) | Delegated to Claude by the owner, 2026-11-09 |
+| G10 | First-party services are reached over a Service Binding, not a public URL or OAuth (§3) | Proposed with M1 |
+| G11 | Stateless MCP: no protocol sessions, no Durable Objects | M1 |
+| G12 | Services are a code-reviewed list in this repo (`src/upstreams.ts`), never a URL a user types | M1 |
+| G13 | HCP Terraform workspace `2earl-mcp`, working directory `infra` | Owner, 2026-11-09 |
 
 ## 3. Architecture
 
 ```
-                          login.2earl.com (authorization server)
-                                ▲ OAuth (MCP clients)    ▲ OAuth (gateway web sign-in)
-                                │                        │
-MCP client ── Bearer ──▶ mcp.2earl.com/mcp ──RPC──▶ login: validateToken, (later) export
-                          │  Worker "mcp"                ▲
-                          │                              │ RPC: AccountEvents.deleteUser
-                          ├── own tools                  │
-                          ├── upstream MCP client ──▶ github MCP, notion MCP, … (allowlist)
-                          │      with the user's upstream token (D1, encrypted)
-                          └── web: /connections (sign in with 2earl, connect/disconnect)
+                        login.2earl.com (authorization server)
+                              ▲ OAuth (MCP clients: consent, tokens)
+                              │
+MCP client ─ Bearer ─▶ mcp.2earl.com/mcp ── RPC validateToken ──▶ login
+                        │  Worker "mcp"   ◀── RPC AccountEvents.deleteUser/exportUser ── login
+                        │
+                        ├─ whoami
+                        └─ Service Binding ──▶ prompt-share, entrypoint GatewayMcp (MCP over fetch)
+                              X-2earl-User / -Client / -Scopes          ▲
+                                                                        │ RPC AccountEvents
+                                                                   login ┘ (its own deletion)
 ```
 
-- **Runtime:** one Cloudflare Worker `mcp`, custom domain `mcp.2earl.com`, same account as login.
-- **Protocol:** `@modelcontextprotocol/server` (v2 SDK) `createMcpHandler`: a fresh server per
-  request, no `Mcp-Session-Id`, no standalone streams. The 2026-07-28 revision is stateless.
-  Clients on the stateless 2025 Streamable HTTP still work on the same route.
-- **Auth:** `OAuthResourceServer` from `@cloudflare/workers-oauth-provider`. It validates through
-  `env.AUTH_SERVER.validateToken`, wrapping the MCP handler (GATEWAY_INTEGRATION §3).
-- **Web pages** (`/connections`, OAuth callbacks): Hono, server-rendered, the same visual
-  identity as login, CSP without scripts.
-- **Storage:** D1 `mcp` and KV `MCP_CACHE`, both in the EU jurisdiction.
+- **Runtime:** one Worker `mcp`, custom domain `mcp.2earl.com`, same Cloudflare account as
+  login. `workers.dev` and preview URLs are off.
+- **Protocol:** `@modelcontextprotocol/server` 2.x `createMcpHandler`. Each request gets a fresh
+  server: no `Mcp-Session-Id`, no standalone streams. Clients on the stateless 2025 Streamable
+  HTTP are served from the same definition.
+- **Auth:** `OAuthResourceServer` from `@cloudflare/workers-oauth-provider`. It publishes RFC 9728
+  metadata, answers the `401`/`403` challenges, and validates through
+  `env.AUTH_SERVER.validateToken`. The bearer token goes no further than this step.
+- **Services:** an MCP client (`@modelcontextprotocol/client`) per request and service. It speaks
+  Streamable HTTP over the service's Service Binding (a named `GatewayMcp` entrypoint), so there
+  is no public URL and no network hop. The user's identity travels in headers (§3.1).
+- **Storage:** D1 `mcp`, EU jurisdiction: tool pins and the security log (§6).
 
-## 4. MCP requests
+### 3.1 Why identity headers, not OAuth, between the gateway and a first-party service
 
-1. `OAuthResourceServer` validates the bearer token, giving `uid`, `clientId` and `scope`.
-2. `tools/list` returns:
-   - own tools the token's scopes allow;
-   - for each upstream the user has connected **and** the token's scopes allow, that upstream's
-     tools (filtered by the allowlist, §6.3), prefixed `<upstream>__<tool>`.
-3. `tools/call` routes on the prefix:
-   - an own tool runs in the Worker;
-   - an upstream tool calls the upstream through the MCP client, with the user's upstream
-     access token. On `401` the token is refreshed once. If that fails, the connection is marked
-     "reconnect" and the tool returns an error naming `https://mcp.2earl.com/connections`.
-4. Scope errors answer `insufficientScope(...)` with every scope the call needs (MCP step-up).
+A named entrypoint can be reached only by a Worker in the same Cloudflare account that binds to
+it; it has no public route. The gateway is the only Worker that binds to `GatewayMcp`, so
+headers it sets are as trustworthy as an RPC argument.
+OAuth between the two would add:
+- a second token per user and service;
+- a second consent;
+- a token store;
 
-Upstream tool lists are cached per user and upstream in KV, honouring the upstream's `ttlMs`
-(default 5 minutes). Calls and lists have timeouts and response-size limits.
+and protect against nothing an attacker inside the account couldn't do anyway.
 
-## 5. Connecting an upstream account
+The service is told:
+- `X-2earl-User`: the user's stable 2earl ID;
+- `X-2earl-Client`: the assistant's client ID;
+- `X-2earl-Scopes`: of the token's scopes, **only that service's own**, with `write` implying
+  `read` already applied.
 
-### 5.1 Signing in to mcp.2earl.com
+It is never sent the token. Services must not accept these headers on their public routes
+(UPSTREAM_CONTRACT §2).
 
-The web pages need to know which 2earl user is in the browser. The gateway signs in **with
-login, as an OAuth client** (authorization code + PKCE):
-- client: registered once in login `/admin` → Apps;
-- redirect URI: `https://mcp.2earl.com/auth/callback`;
-- resource: the gateway's own;
-- scope: `mcp:connections`.
+## 4. Permissions
 
-It validates the token over the binding to get `uid`, discards the token, and sets its own
-`__Host-session` cookie (host-only, 12 h). The user already has a login session, so this is
-a redirect and, once remembered, no click.
+The owner set the rule: each service has its own permission set, and more apps will follow. The
+gateway therefore:
+- gives each service its own namespace, `mcp:<service>.<permission>`;
+- requires every service to have at least `read` and `write`;
+- lets a service add more where one approval would be too broad. For example, prompt-share could
+  have `mcp:prompts.publish` for making a prompt public, separate from editing your own.
 
-### 5.2 The upstream flow
+| Scope | Allows | Declared |
+|---|---|---|
+| `mcp:tools.read` | See which tools exist; `whoami`. Implied by any service scope | login registry (exists) |
+| `mcp:<service>.read` | That service's read-only tools | login registry, when the service is added |
+| `mcp:<service>.write` | That service's other tools. Implies `read` | idem |
+| `mcp:<service>.<other>` | Tools that name it in `_meta["2earl/scope"]` | idem |
 
-On `/connections`, the signed-in user presses **Connect** for an allowed upstream. Then:
-1. The gateway discovers the upstream's authorization server:
-   - the upstream's RFC 9728 metadata, then its RFC 8414 or OIDC metadata;
-   - every discovered URL must be `https`;
-   - fetches run under `global_fetch_strictly_public`.
-2. It creates an OAuth transaction (`state`, PKCE `S256`, `resource` = the upstream's canonical
-   URI). It is bound to the gateway session, single-use and 10 minutes long, and is created
-   **only after** the user pressed Connect: MCP's per-client-consent rule.
-3. The browser goes to the upstream's authorization page.
-4. On the callback:
-   - `state` must match;
-   - `iss` is checked (RFC 9207);
-   - the code is exchanged;
-   - tokens are stored encrypted (§8).
+Which scope a tool needs (`src/scopes.ts`):
+1. The scope the tool names in `_meta["2earl/scope"]`, if it is one of the service's own.
+2. Otherwise `read` for a tool annotated `readOnlyHint: true`.
+3. Otherwise `write`.
 
-**Client identity at each upstream**, in MCP's order of preference:
-1. **Pre-registered:** the owner registers the gateway with the upstream provider; the client ID
-   and secret are Worker secrets.
-2. **Client ID Metadata Document:** the gateway publishes
-   `https://mcp.2earl.com/oauth/client.json` (public client, PKCE, redirect
-   `https://mcp.2earl.com/connections/callback`).
-3. **Dynamic Client Registration** (deprecated in MCP, still common): one registration per
-   upstream, stored in D1, never per user.
+An unannotated tool therefore needs `write`, so a service forgetting an annotation fails closed.
 
-### 5.3 Why this avoids the confused deputy
+A missing scope on `tools/call` is answered with `403 insufficient_scope` and the scope needed,
+before the service is called (MCP step-up). The client can then ask the user for exactly that
+permission on login's consent page.
 
-MCP's security guide describes a proxy that forwards an MCP client's authorization straight to a
-third party under one static client ID; consent cookies then let an attacker's client skip
-consent. Here, connecting an upstream is never part of an MCP client's authorization. It happens
-only on the gateway's own page, by the signed-in user pressing Connect, with CSRF protection.
-Which MCP clients may then use the connected account is decided on login's consent page,
-per client and per scope (§7).
+`mcp:tools.invoke` is **dropped**. It was a placeholder for "call 2earl's own tools". The only own
+tool, `whoami`, is read-only, so `invoke` would be a consent line that grants nothing. Removing it
+from login's registry is part of the login change in §8.
 
-## 6. Upstreams
+Why not one permission for everything behind the gateway: one approval would then cover every
+service, present and future. With per-service scopes the consent page says *what* the assistant
+gets ("Read your prompts in Prompt share"), and a user can grant one service without another.
 
-### 6.1 The allowlist (`src/upstreams.ts`)
+## 5. Services behind the gateway
 
-Each upstream is declared in code:
-- `id` (the tool prefix and scope suffix);
+### 5.1 The list (`src/upstreams.ts`)
+
+Each service is declared in code:
+- `id`: the tool prefix (`<id>__<tool>`) and the scope namespace;
 - display name;
-- canonical MCP URL;
-- client-registration method;
-- tool allowlist (§6.3).
+- Service Binding name;
+- `trust`: `first-party` or `third-party`;
+- its scopes.
 
-Adding one is a pull request. Users can't add arbitrary URLs: the gateway never fetches a URL a
-user typed (SSRF, G7).
+Adding a service is a pull request here, plus a binding in `wrangler.jsonc`, plus its scopes in
+login's registry. M1 ships the list empty; prompt-share's entry is ready in a comment.
 
-### 6.2 Which upstreams first: **open (owner)**
+`tools/list` asks every service in parallel and shows each one's tools prefixed and titled with
+the service's name ("Prompt share: Search prompts"). A service that fails or times out (25 s) is
+left out of that response; the others and `whoami` still answer.
 
-The gateway works with any remote MCP server that supports OAuth 2.1 with PKCE. Which ones to
-offer first decides which providers the owner registers the gateway with (§5.2).
+### 5.2 Tool pinning
 
-### 6.3 Tool allowlist and description pinning
+What an assistant reads in a tool definition, the description above all, steers its model. A
+changed definition can carry instructions ("tool poisoning") or change a tool after users agreed
+to it ("rug pull"). So:
+- the gateway hashes each tool's visible definition when first seen: name, title, description,
+  input and output schema, annotations, the scope it needs;
+- a new or changed **third-party** tool is recorded `pending` and hidden until the owner approves
+  it. In M1 that is an `UPDATE tool_pins SET status = 'approved' …` on D1; an admin page is M3;
+- a new or changed **first-party** tool is recorded, audited (`tool.added`, `tool.changed`) and
+  offered at once.
 
-Upstream tool descriptions reach the assistant's model. A compromised or changed upstream can
-put instructions in them ("tool poisoning") or change a tool's behaviour after it was approved.
-Proposed:
-- each upstream lists the tools the gateway offers;
-- the gateway records a hash of each tool's name, description and input schema when first
-  seen;
-- a tool whose hash changes is **hidden** until the owner re-approves it in the gateway's
-  admin view, and the change is audited.
+The first-party exception departs from the owner's "hide until approved". The reason: a
+first-party service's tools are reviewed in its own pull request and deployed with the owner's
+approval. That review is the approval, and pinning protects against changes nobody reviewed.
+Hiding them again would make every prompt-share release remove its changed tools for all users,
+until the owner approves them a second time with no page yet to do it on. Someone able to deploy
+a malicious prompt-share already has prompt-share's data, so the pin adds no protection there.
+The audit entry keeps the change visible.
 
-## 7. Permissions
+### 5.3 Results
 
-Declared in login's service registry (`src/services.ts`, entry `mcp`), each with consent
-wording:
+Tool results pass through unchanged and are never stored or logged. The gateway doesn't chain
+calls: the assistant and the user decide what runs next.
 
-| Scope | Allows |
-|---|---|
-| `mcp:tools.read` | list tools (exists) |
-| `mcp:tools.invoke` | call 2earl's own tools (exists) |
-| `mcp:connections` | the gateway's own web sign-in: manage connected accounts. Only the gateway's first-party client |
-| `mcp:<upstream>` | list and call that upstream's tools with the user's connected account. One per upstream, e.g. `mcp:github`. **Open (owner):** recommended |
-
-Per-upstream scopes make login's consent page say *which* connected accounts an assistant may
-use ("Use your GitHub account through 2earl"), and let a user give an assistant GitHub without
-Notion. The alternative is one `mcp:tools.invoke` for everything: fewer prompts, but one
-approval covers every connected account. Scope hierarchy (MCP requires one):
-`mcp:tools.invoke` ⊇ `mcp:tools.read`, and `mcp:<upstream>` ⊇ listing that upstream's tools.
-
-## 8. Data (D1 `mcp`, EU)
+## 6. Data (D1 `mcp`, EU)
 
 | Table | Holds | Kept |
 |---|---|---|
-| `web_sessions` | hash of the gateway session cookie, `uid`, times | 12 h idle / 7 days |
-| `connections` | `uid`, upstream, status; upstream access and refresh tokens (AES-256-GCM, key from `UPSTREAM_TOKEN_KEY`, bound to `uid` + upstream); expiry; granted scope | Until the user disconnects or deletes the 2earl account |
-| `oauth_tx` | hashed `state`, PKCE verifier, `uid`, upstream | ≤ 10 minutes, single use |
-| `upstream_clients` | DCR registrations, one per upstream (secrets encrypted) | While the upstream is allowed |
-| `tool_pins` | hash per upstream tool, approval state | While the upstream is allowed |
-| `audit_events` | connection added/removed/refreshed/failed, tool **name**, upstream and outcome. Never arguments or results | 90 days |
+| `tool_pins` | per service and tool: definition hash, `approved`/`pending`, times | While the service is listed |
+| `audit_events` | `tool.called`/`denied`/`failed` with service, tool **name** and outcome; user ID and client ID; `tool.added`/`changed`/`held`; `user.deleted` | 90 days (daily cron) |
 
-KV `MCP_CACHE`: upstream tool lists per `uid` + upstream, minutes.
+**No tool arguments or results are stored or logged.** Per-user state lives in the services, not
+in the gateway.
 
-**No tool arguments or results are stored or logged.** They pass through memory only.
+### 6.1 Account deletion (G4)
 
-### 8.1 Account deletion (G4)
+login keeps a deletion outbox and calls every registered service's `AccountEvents.deleteUser`
+until each succeeds (every 15 minutes).
+- **The gateway** (`AccountEvents` in `src/index.ts`) re-keys the user's audit entries to
+  `deleted:<random>`, so the security log keeps what happened but no longer says who, and records
+  `user.deleted`. It is idempotent.
+- **Each service** has its own `AccountEvents` and its own entry in login's registry
+  (UPSTREAM_CONTRACT §4). The gateway doesn't relay deletion: a service may hold data from its
+  own web app too, and login must know whether *that service* has finished.
 
-`AccountEvents.deleteUser(uid)`:
-- revokes each upstream token at the upstream (RFC 7009 where supported, best effort);
-- deletes `connections`, `web_sessions`, `oauth_tx` and the KV cache entries for `uid`;
-- keeps audit entries, re-keyed as login does.
+### 6.2 Export (G8)
 
-It is idempotent and throws if anything remains (login retries every 15 minutes). After
-deployment a login PR adds the binding.
+`AccountEvents.exportUser(uid)` returns the gateway's security-log entries about the user. login's
+"Download your data" calls it over the same binding (§8). Each service exports its own data the
+same way.
 
-### 8.2 Access and export: **open (owner)**
-
-GDPR Art. 15 covers the gateway's data too. Proposed: `AccountEvents.exportUser(uid)` returns
-the user's connections (no tokens) and audit entries. login's "Download your data" includes it,
-so the user keeps one place for both rights.
-
-## 9. Security summary
+## 7. Security summary
 
 Full table in [THREAT_MODEL.md](THREAT_MODEL.md). The main controls:
-- **Token passthrough is impossible by construction.** The 2earl token is validated and dropped;
-  upstreams only ever see their own tokens.
-- **Audience:** only tokens for `https://mcp.2earl.com/mcp`, from login.
-- **Confused deputy:** upstream connections only from the gateway's own signed-in page, with
-  `state` created after the click (§5.3).
-- **SSRF:**
-  - upstreams come from the code allowlist;
-  - discovered OAuth URLs must be `https`;
-  - fetches are strictly public;
-  - no redirects followed on token requests.
-- **Upstream credentials:** encrypted at rest, bound to user and upstream, never logged or
-  returned to a client.
-- **Tool poisoning and rug pulls:** allowlist plus description pinning (§6.3).
-- **Prompt injection through tool results:** can't be filtered reliably. The gateway labels
-  results by source, limits their size, and never chains calls itself; the assistant and the
-  user stay in control of what is called next.
-- **Abuse:** per-user and per-network rate limits (Workers Rate Limiting, namespace `1002`).
-  Zone constraint from login: don't serve `/authorize`, `/oauth/token`, `/callback/google` or
-  `/login`.
+- **No token passthrough:** the 2earl token is validated and dropped; services get identity
+  headers.
+- **Audience:** only tokens for `https://mcp.2earl.com/mcp`, issued by login, accepted.
+- **Least privilege per service:** a service is told only its own scopes; scopes are re-checked
+  against the pinned definition before each call.
+- **No SSRF surface:** services are a code list reached over bindings; the Worker runs with
+  `global_fetch_strictly_public`; service transports refuse cross-origin redirects.
+- **Tool poisoning:** pinning, hiding for third-party, audit for first-party.
+- **Abuse:** a per-user rate limit (120 requests a minute, namespace `1002`) and a 25 s timeout
+  per service call. Zone constraint from login: the gateway serves no `/authorize`,
+  `/oauth/token`, `/callback/google` or `/login`.
+
+## 8. Changes outside this repository
+
+**login** (one PR after the gateway is deployed; the binding fails if the Worker doesn't exist):
+1. Drop `mcp:tools.invoke` from the registry entry `mcp`.
+2. Binding `MCP_GATEWAY_EVENTS` → `{ "service": "mcp", "entrypoint": "AccountEvents" }`.
+3. "Download your data" calls `exportUser` on every registered service that has a binding.
+
+**prompt-share** (M2): implements UPSTREAM_CONTRACT. Then a login PR adds its scopes
+(`mcp:prompts.*`) to the `mcp` entry and registers prompt-share itself with its deletion binding.
+
+**2earl.com:** the privacy policy covers the gateway and each service before launch.
+
+## 9. Later: third-party MCP servers
+
+Not built. This is what it needs, and why it waits for a concrete server:
+- **Per-user accounts:** a user connects their own account at each server once, on a gateway page
+  signed in with login. The upstream OAuth transaction (`state`, PKCE, `resource`, `iss` check)
+  is created only after the user presses Connect: MCP's confused-deputy rule.
+- **Client identity at the server**, in MCP's order of preference: pre-registered; Client ID
+  Metadata Document at `https://mcp.2earl.com/oauth/client.json`; Dynamic Client Registration
+  (deprecated) once per server.
+- **Storage:** encrypted upstream tokens per user (AES-256-GCM, key as a Worker secret, bound to
+  user and server); deleted with the account and revoked at the server where possible.
+- **SSRF:** discovered OAuth URLs must be `https`; fetches strictly public; no redirects on token
+  requests.
+
+The gateway's `trust: 'third-party'` hiding and its scope model already apply to such servers.
 
 ## 10. Infrastructure and CI
 
-- **Terraform** in `infra/` (HCP workspace `2earl-mcp-prod`, working directory `infra`):
+- **Terraform** in `infra/` (HCP workspace `2earl-mcp`, working directory `infra`, manual apply):
+  - D1 `mcp` in the EU, protected from destroy;
   - custom domain `mcp.2earl.com`;
-  - D1 and KV in the EU;
-  - zone referenced by data source.
+  - the zone, read only. Zone-wide settings stay in login's Terraform.
+- **CI:** the required check `verify` runs typecheck (including generated Worker types), lint and
+  format, the Workers-runtime tests, the bundle, and `pnpm audit`.
+- **Deploys:** only from `main`, through the `production` environment with the owner's approval.
+  They apply D1 migrations and then deploy, and smoke-test `/healthz`.
+- **Supply chain:** SHA-pinned actions, exact dependency versions, pnpm's 24 h release delay,
+  Dependabot, CodeQL.
+- **Secrets** (production environment): `CLOUDFLARE_API_TOKEN` only. The gateway itself holds no
+  secret in M1.
 
-  Zone-wide settings stay in login's Terraform.
-- **CI and deploys:** as in login:
-  - required `verify` check (typecheck, lint, Workers tests, browser tests, bundle);
-  - deploys only from `main`, through the `production` environment with owner approval;
-  - SHA-pinned actions;
-  - pnpm release-age delay, Dependabot, CodeQL.
-- **Secrets** (production environment):
-  - `CLOUDFLARE_API_TOKEN`;
-  - `UPSTREAM_TOKEN_KEY`, `SESSION_PEPPER`;
-  - per pre-registered upstream: its client secret.
+## 11. Phases
 
-## 11. Changes in login
-
-1. Registry entry `mcp`: add `mcp:connections`, and per-upstream scopes if chosen (§7).
-2. Register the gateway's web sign-in client in `/admin` (redirect
-   `https://mcp.2earl.com/auth/callback`).
-3. After the gateway is deployed: the `MCP_GATEWAY_EVENTS` binding (`service: "mcp"`,
-   `entrypoint: "AccountEvents"`).
-4. If §8.2 is accepted: export includes the gateway's part.
-5. Privacy policy on 2earl.com: the gateway's data, before launch.
-
-## 12. Phases
-
-| Phase | Deliverable |
-|---|---|
-| M0 | This design and threat model (PR) |
-| M1 | Worker, CI, deploy, Terraform. MCP endpoint behind login with 2earl's own tools. `AccountEvents`. login binding. **An assistant can connect and use own tools** |
-| M2 | Web sign-in with login; `/connections`; upstream OAuth (pre-registered, CIMD, DCR); encrypted token store; deletion of connections |
-| M3 | Proxied `tools/list` and `tools/call`; refresh; allowlist and pinning; rate limits; audit |
-| M4 | Browser tests (consent, connect, call), a real assistant end to end, export hook, privacy policy, launch |
-
-## 13. Open decisions for the owner
-
-1. **First upstreams (§6.2):** which MCP servers to offer first.
-2. **First own tools (§1):** what 2earl's own tools should do. Without an answer, M1 ships two:
-   - `whoami`: your 2earl account ID and what this assistant may do;
-   - `connections`: your connected accounts, and a link to connect more.
-3. **Per-upstream scopes (§7):** recommended.
-4. **Tool allowlist and description pinning (§6.3):** recommended.
-5. **Gateway data in the account export (§8.2):** recommended.
+| Phase | Deliverable | State |
+|---|---|---|
+| M0 | Design and threat model | Done (PR #1) |
+| M1 | Worker: auth via login, `whoami`, service plumbing (bindings, scopes, step-up, pinning, audit), `AccountEvents` delete and export; CI, deploy, Terraform. Then login's binding and export hook | Built; deployment pending |
+| M2 | prompt-share's `GatewayMcp` (its repository); its entry here; its scopes and deletion in login | Waits for prompt-share |
+| M3 | Owner page for held tools; a real assistant end to end (browser test through consent); privacy policy; launch | |
+| Later | Third-party MCP servers (§9) | When one is wanted |
