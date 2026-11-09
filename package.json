@@ -1,0 +1,19 @@
+{
+  "name": "@2earl/mcp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "2earl MCP gateway at mcp.2earl.com: 2earl's own tools and MCP servers you connect, behind 2earl accounts",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "lint": "prettier --check .",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "prettier": "3.9.10"
+  }
+}
