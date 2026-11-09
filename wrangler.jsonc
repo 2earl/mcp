@@ -1,0 +1,46 @@
+// 2earl MCP gateway (docs/DESIGN.md). Deployed only by .github/workflows/deploy.yml.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  // Outbound fetches can't reach private or same-zone addresses (SSRF, docs/THREAT_MODEL.md).
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  // Served only at https://mcp.2earl.com (custom domain in infra/worker.tf).
+  "workers_dev": false,
+  "preview_urls": false,
+  // No request logs: they would carry tool names and timing per user.
+  "observability": { "enabled": false },
+
+  "vars": {
+    // The gateway's canonical resource (RFC 8707). Must equal login's MCP_RESOURCE.
+    "RESOURCE": "https://mcp.2earl.com/mcp",
+    "AUTHORIZATION_SERVER": "https://login.2earl.com",
+  },
+
+  // login's WorkerEntrypoint: validateToken (docs/GATEWAY_INTEGRATION.md in 2earl/login).
+  // Services behind the gateway (src/upstreams.ts) add their bindings here.
+  "services": [{ "binding": "AUTH_SERVER", "service": "login" }],
+
+  // Per user: 120 MCP requests a minute.
+  "ratelimits": [
+    {
+      "name": "USER_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 120, "period": 60 },
+    },
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "mcp",
+      // Created by infra/storage.tf (EU jurisdiction); set after the first terraform apply.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+
+  // Daily: audit events older than 90 days.
+  "triggers": { "crons": ["41 3 * * *"] },
+}
