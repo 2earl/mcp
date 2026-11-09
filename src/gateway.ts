@@ -131,6 +131,53 @@ async function upstreamTools(
   return { client, tools: await approvedTools(env.DB, deps.now(), upstream, listed) };
 }
 
+/** A prompt as a service lists it (MCP `prompts/list`). */
+export interface UpstreamPrompt {
+  name: string;
+  title?: string | undefined;
+  description?: string | undefined;
+  arguments?: { name: string; description?: string; required?: boolean }[] | undefined;
+  _meta?: Record<string, unknown> | undefined;
+}
+
+/**
+ * The scope a prompt needs: one it names itself (`_meta["2earl/scope"]`, if it is one of the
+ * service's), else `read`. Prompts only read.
+ */
+export function promptScope(upstream: Upstream, prompt: UpstreamPrompt): string {
+  const named = prompt._meta?.['2earl/scope'];
+  if (typeof named === 'string' && Object.values(upstream.scopes).includes(named)) return named;
+  return upstream.scopes.read;
+}
+
+/**
+ * The prompts a service offers this user (docs/DESIGN.md §4.3). Only from first-party services:
+ * what a user picks from a prompt menu is sent as their own message, so a third party's text
+ * must not get there. Not pinned: a first-party service's prompts are the user's own content
+ * (Prompt share lists only the user's own prompts), and they change whenever the user edits one.
+ */
+async function upstreamPrompts(
+  env: Env,
+  deps: GatewayDeps,
+  upstream: Upstream,
+  identity: Identity,
+): Promise<{ client: Client; prompts: UpstreamPrompt[] } | null> {
+  if (upstream.trust !== 'first-party') return null;
+  const client = await connect(env, upstream, identity);
+  if (!client.getServerCapabilities()?.prompts) return null;
+  const listed: UpstreamPrompt[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await client.listPrompts(cursor ? { cursor } : {});
+    listed.push(...(page.prompts as UpstreamPrompt[]));
+    cursor = page.nextCursor;
+  } while (cursor && listed.length < 200);
+  return {
+    client,
+    prompts: listed.filter((p) => has(identity.scope, promptScope(upstream, p), deps.upstreams)),
+  };
+}
+
 const WHOAMI = {
   name: 'whoami',
   title: 'Who am I on 2earl',
@@ -145,7 +192,7 @@ const WHOAMI = {
 // eslint-disable-next-line @typescript-eslint/no-deprecated
 function buildServer(env: Env, deps: GatewayDeps): Server {
   // eslint-disable-next-line @typescript-eslint/no-deprecated
-  const server = new Server(GATEWAY_INFO, { capabilities: { tools: {} } });
+  const server = new Server(GATEWAY_INFO, { capabilities: { tools: {}, prompts: {} } });
 
   server.setRequestHandler('tools/list', async (_request, ctx) => {
     const identity = identityOf(ctx.http?.authInfo);
@@ -213,6 +260,58 @@ function buildServer(env: Env, deps: GatewayDeps): Server {
     } catch (error) {
       await log('tool.failed', error instanceof Error ? error.name : 'unknown');
       return textResult(`${upstream.name} couldn’t complete this request. Try again.`, true);
+    }
+  });
+
+  server.setRequestHandler('prompts/list', async (_request, ctx) => {
+    const identity = identityOf(ctx.http?.authInfo);
+    const prompts: unknown[] = [];
+    const lists = await Promise.allSettled(
+      deps.upstreams.map(async (upstream) => {
+        const offered = await upstreamPrompts(env, deps, upstream, identity);
+        return (offered?.prompts ?? []).map((prompt) => ({
+          ...prompt,
+          ...(deps.mode === 'single'
+            ? {}
+            : {
+                name: prefixedName(upstream, prompt.name),
+                title: `${upstream.name}: ${prompt.title ?? prompt.name}`,
+              }),
+        }));
+      }),
+    );
+    for (const list of lists) if (list.status === 'fulfilled') prompts.push(...list.value);
+    return { prompts } as never;
+  });
+
+  server.setRequestHandler('prompts/get', async (request, ctx) => {
+    const identity = identityOf(ctx.http?.authInfo);
+    const target = resolve(deps, request.params.name);
+    if (!target) throw new Error(`Unknown prompt: ${request.params.name}`);
+    const { upstream, tool: name } = target;
+    // Names and outcomes only: a prompt's name can carry its title, which is the user's content.
+    const log = (event: 'prompt.got' | 'prompt.denied' | 'prompt.failed', outcome?: string) =>
+      audit(env.DB, deps.now(), event, {
+        actorUserId: identity.uid,
+        clientId: identity.clientId,
+        detail: { upstream: upstream.id, ...(outcome ? { outcome } : {}) },
+      });
+    const offered = await upstreamPrompts(env, deps, upstream, identity);
+    const definition = offered?.prompts.find((p) => p.name === name);
+    if (!offered || !definition) {
+      await log('prompt.denied');
+      throw new Error(`Unknown prompt: ${request.params.name}`);
+    }
+    try {
+      const result = await offered.client.getPrompt({
+        name,
+        arguments: request.params.arguments ?? {},
+      });
+      await log('prompt.got');
+      return result;
+    } catch (error) {
+      await log('prompt.failed', error instanceof Error ? error.name : 'unknown');
+      throw new Error(`${upstream.name} couldn’t give this prompt. Try again.`, { cause: error });
     }
   });
 

@@ -7,6 +7,9 @@ export type AuditEvent =
   | 'tool.added'
   | 'tool.changed'
   | 'tool.held'
+  | 'prompt.got'
+  | 'prompt.denied'
+  | 'prompt.failed'
   | 'user.deleted';
 
 export const AUDIT_RETENTION_SECONDS = 90 * 24 * 60 * 60;

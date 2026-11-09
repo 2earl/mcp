@@ -87,6 +87,17 @@ Rules:
   exception reaches the user as "Prompt share couldn't complete this request".
 - Answer within 25 seconds and keep results small; the assistant pays for every token.
 
+## 3.1 Prompts (optional)
+
+A first-party service may also serve MCP prompts; the gateway passes them through (DESIGN §5.4).
+
+- Declare the `prompts` capability and answer `prompts/list` and `prompts/get` for the caller.
+- A prompt needs the service's `read` scope unless it names another in
+  `_meta: { "2earl/scope": "mcp:<id>.<permission>" }`. Check `X-2earl-Scopes` again yourself.
+- What a prompt returns is sent as **the user's own message**. List only text the user wrote or
+  the service's own reviewed text, never another user's: wrap that in a tool result instead.
+- Prompt names follow tool names' rules (no `__`).
+
 ## 4. Delete and export the user's data
 
 The service holds its own data, so it answers login itself, like the gateway does:
