@@ -111,6 +111,19 @@ export function fakeUpstream(): {
         return { content: [{ type: 'text', text: 'deleted' }] };
       },
     );
+    // Prompts, as Prompt share lists the user's own: one plain, one that names a scope.
+    server.registerPrompt(
+      'greet',
+      { title: 'Greet', argsSchema: z.object({ name: z.string() }) },
+      ({ name }) => ({
+        messages: [{ role: 'user', content: { type: 'text', text: `Hello ${name}` } }],
+      }),
+    );
+    server.registerPrompt(
+      'resume',
+      { title: 'Resume', _meta: { '2earl/scope': 'mcp:notes.admin' } },
+      () => ({ messages: [{ role: 'user', content: { type: 'text', text: 'resumed' } }] }),
+    );
     return server;
   });
   return {

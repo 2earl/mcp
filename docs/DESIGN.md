@@ -180,6 +180,23 @@ The audit entry keeps the change visible.
 Tool results pass through unchanged and are never stored or logged. The gateway doesn't chain
 calls: the assistant and the user decide what runs next.
 
+### 5.4 Prompts
+
+Claude and other clients show a server's MCP prompts in a menu; what the user picks is sent as
+their own message. The gateway passes prompts through from **first-party services only**: a third
+party's text sent as the user's message is outside every protection a tool result gets.
+
+- `prompts/list`: each first-party service that declares the `prompts` capability, prefixed and
+  titled like tools at `/mcp` (`<id>__<name>`, "Service: Title"), as the service names them at its
+  own address. A prompt needs the service's `read` scope, or a scope it names in
+  `_meta["2earl/scope"]`; prompts the token's scopes don't cover aren't listed.
+- `prompts/get`: checked against the same list, then passed through. Results are not stored.
+- **Not pinned.** A first-party service's prompts are the user's own content (Prompt share lists
+  only the user's own prompts) and change whenever the user edits one; pinning would flag every
+  edit. The trust rests on the service's code review, as for its tools' results.
+- **Audit:** `prompt.got`, `prompt.denied`, `prompt.failed` with the service only. A prompt's name
+  can carry its title, which is the user's content, so it isn't logged.
+
 ## 6. Data (D1 `mcp`, EU)
 
 | Table | Holds | Kept |

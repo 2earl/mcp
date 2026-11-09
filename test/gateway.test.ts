@@ -245,6 +245,57 @@ describe('tool pinning', () => {
   });
 });
 
+describe('prompts', () => {
+  const texts = (result: { messages: { content: unknown }[] }) =>
+    result.messages.map((m) => (m.content as { text: string }).text);
+
+  it('lists a first-party service’s prompts, prefixed, filtered by the scope each needs', async () => {
+    const reader = await mcpClient(worker, testEnv, issueToken(['mcp:notes.read']));
+    const { prompts } = await reader.listPrompts();
+    expect(prompts.map((p) => [p.name, p.title])).toEqual([['notes__greet', 'Notes: Greet']]);
+    const admin = await mcpClient(worker, testEnv, issueToken(['mcp:notes.admin']));
+    expect((await admin.listPrompts()).prompts.map((p) => p.name)).toEqual(['notes__resume']);
+  });
+
+  it('gets a prompt with its arguments, and audits without its name', async () => {
+    const client = await mcpClient(worker, testEnv, issueToken(['mcp:notes.read']));
+    const result = await client.getPrompt({ name: 'notes__greet', arguments: { name: 'Ada' } });
+    expect(texts(result)).toEqual(['Hello Ada']);
+    const row = await env.DB.prepare(
+      "SELECT detail FROM audit_events WHERE event = 'prompt.got'",
+    ).first<{ detail: string }>();
+    expect(JSON.parse(row?.detail ?? '{}')).toEqual({ upstream: 'notes' });
+    // A prompt the token's scopes don't cover isn't there.
+    await expect(client.getPrompt({ name: 'notes__resume' })).rejects.toThrow();
+    expect(await count('audit_events', "event = 'prompt.denied'")).toBe(1);
+  });
+
+  it('passes no prompts from a third-party service', async () => {
+    const gate = makeWorker([{ ...NOTES, trust: 'third-party' as const }]);
+    const client = await mcpClient(gate, testEnv, issueToken(['mcp:notes.admin']));
+    expect((await client.listPrompts()).prompts).toEqual([]);
+    await expect(
+      client.getPrompt({ name: 'notes__greet', arguments: { name: 'x' } }),
+    ).rejects.toThrow();
+  });
+
+  it('uses the service’s own names at its own address', async () => {
+    const token = issueToken(
+      ['mcp:notes.read'],
+      'user-1',
+      'https://app.example/client.json',
+      `${ORIGIN}/notes`,
+    );
+    const client = await mcpClient(worker, testEnv, token, '/notes');
+    expect((await client.listPrompts()).prompts.map((p) => [p.name, p.title])).toEqual([
+      ['greet', 'Greet'],
+    ]);
+    expect(texts(await client.getPrompt({ name: 'greet', arguments: { name: 'Bo' } }))).toEqual([
+      'Hello Bo',
+    ]);
+  });
+});
+
 describe('a service’s own address (/notes)', () => {
   const notesToken = (scope: string[]) =>
     issueToken(scope, 'user-1', 'https://app.example/client.json', `${ORIGIN}/notes`);
