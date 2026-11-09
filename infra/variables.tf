@@ -25,10 +25,9 @@ variable "worker_name" {
 
 variable "attach_custom_domain" {
   description = <<-EOT
-    Attach the hostname to the Worker. A custom domain can only point at a Worker that exists,
-    and the Worker is created by its first deploy, so this stays false until then
-    (README.md, "First deployment").
+    Attach the hostname to the Worker. A custom domain can only point at a Worker that exists;
+    false only before the Worker's first deploy (README.md, "First deployment").
   EOT
   type        = bool
-  default     = false
+  default     = true
 }

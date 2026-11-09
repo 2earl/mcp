@@ -36,7 +36,7 @@
       "binding": "DB",
       "database_name": "mcp",
       // Created by infra/storage.tf (EU jurisdiction); set after the first terraform apply.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "95c79da9-a710-49bc-a9b9-c61bb4bbcaf8",
       "migrations_dir": "migrations",
     },
   ],
