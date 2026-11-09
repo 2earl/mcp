@@ -100,6 +100,16 @@ The service is told:
 It is never sent the token. Services must not accept these headers on their public routes
 (UPSTREAM_CONTRACT §2).
 
+### 3.2 Opening an address in a browser
+
+People paste a connector address into a browser to check it. A `GET` that asks for HTML and
+carries no `Authorization` header (`src/browser-page.ts`) gets the same answer an assistant would,
+`401` with the same `WWW-Authenticate` challenge, but with a page instead of a JSON error: what the
+address is for, how to add it to Claude, and links to the service's own help and the user's 2earl
+account. MCP clients never send that combination (they ask for JSON or an event stream, or send a
+token), so their answers, and OAuth discovery, are unchanged. The page has no scripts and loads
+nothing from elsewhere (its own CSP). An unknown path gets a page that names the real addresses.
+
 ## 4. Permissions
 
 The owner set the rule: each service has its own permission set, and more apps will follow. The

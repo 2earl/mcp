@@ -5,6 +5,7 @@ import {
 } from '@cloudflare/workers-oauth-provider';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { AUDIT_RETENTION_SECONDS, audit } from './audit';
+import { PAGE_CSP, endpointPage, isBrowserVisit, notFoundPage } from './browser-page';
 import { createGateway, type GrantProps } from './gateway';
 import { TOOLS_READ } from './scopes';
 import { UPSTREAMS, type Upstream } from './upstreams';
@@ -135,12 +136,27 @@ export function createWorker(deps: {
     }
     const endpoint = endpointFor(url.pathname);
     if (!endpoint) {
-      return withHeaders(new Response('Not found', { status: 404 }), {
-        ...SECURITY_HEADERS,
-        ...CORS_HEADERS,
-      });
+      const notFound = isBrowserVisit(request)
+        ? new Response(notFoundPage(), {
+            status: 404,
+            headers: {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Content-Security-Policy': PAGE_CSP,
+            },
+          })
+        : new Response('Not found', { status: 404 });
+      return withHeaders(notFound, { ...SECURITY_HEADERS, ...CORS_HEADERS });
     }
     const response = await resourceServer(env, endpoint).fetch(request, env, ctx);
+    // A person who opened the address in a browser: the same answer (status, challenge
+    // headers), with a page explaining what the address is for instead of a JSON error.
+    if (response.status === 401 && url.pathname === endpoint.path && isBrowserVisit(request)) {
+      const page = new Response(endpointPage(`${url.origin}${endpoint.path}`, endpoint), response);
+      page.headers.set('Content-Type', 'text/html; charset=utf-8');
+      page.headers.set('Content-Security-Policy', PAGE_CSP);
+      page.headers.delete('Content-Length');
+      return withHeaders(page, { ...SECURITY_HEADERS, ...CORS_HEADERS });
+    }
     return withHeaders(response, { ...SECURITY_HEADERS, ...CORS_HEADERS });
   };
 }
