@@ -59,6 +59,13 @@ MCP client ─ Bearer ─▶ mcp.2earl.com/mcp ── RPC validateToken ──�
                                                                    login ┘ (its own deletion)
 ```
 
+- **Addresses:** each is its own OAuth resource, so a token issued for one is refused at the
+  others.
+  - `https://mcp.2earl.com/mcp`: every service, tools named `<id>__<tool>`, plus `whoami`.
+  - `https://mcp.2earl.com/<id>`, e.g. `/promptshare`: one service alone, with tools named as the
+    service names them. This is the address a service's Claude directory listing uses, so the
+    listing shows only that service's tools. A new service gets its address by being added to
+    the list. login registers each address as an endpoint of the gateway's entry.
 - **Runtime:** one Worker `mcp`, custom domain `mcp.2earl.com`, same Cloudflare account as
   login. `workers.dev` and preview URLs are off.
 - **Protocol:** `@modelcontextprotocol/server` 2.x `createMcpHandler`. Each request gets a fresh

@@ -34,6 +34,29 @@ export interface Identity {
 export interface GatewayDeps {
   upstreams: readonly Upstream[];
   now: () => number;
+  /**
+   * `all`: every service, tools prefixed `<id>__<tool>`, plus `whoami` (`/mcp`).
+   * `single`: one service at its own address, tools as the service names them (`/<id>`).
+   */
+  mode?: 'all' | 'single';
+}
+
+/** A tool's name and title as the assistant sees them. */
+function exposed(deps: GatewayDeps, upstream: Upstream, tool: UpstreamTool) {
+  if (deps.mode === 'single') return { name: tool.name, title: tool.title ?? tool.name };
+  return {
+    name: prefixedName(upstream, tool.name),
+    title: `${upstream.name}: ${tool.title ?? tool.name}`,
+  };
+}
+
+/** The service and tool an assistant-facing name refers to. */
+function resolve(deps: GatewayDeps, name: string): { upstream: Upstream; tool: string } | null {
+  if (deps.mode === 'single') {
+    const upstream = deps.upstreams[0];
+    return upstream && name ? { upstream, tool: name } : null;
+  }
+  return splitName(deps.upstreams, name);
 }
 
 /** A Service Binding to a service's `GatewayMcp` entrypoint (docs/UPSTREAM_CONTRACT.md). */
@@ -126,16 +149,12 @@ function buildServer(env: Env, deps: GatewayDeps): Server {
 
   server.setRequestHandler('tools/list', async (_request, ctx) => {
     const identity = identityOf(ctx.http?.authInfo);
-    const tools: unknown[] = [WHOAMI];
+    const tools: unknown[] = deps.mode === 'single' ? [] : [WHOAMI];
     // One failing service doesn't hide the others.
     const lists = await Promise.allSettled(
       deps.upstreams.map(async (upstream) => {
         const { tools: offered } = await upstreamTools(env, deps, upstream, identity);
-        return offered.map((tool) => ({
-          ...tool,
-          name: prefixedName(upstream, tool.name),
-          title: `${upstream.name}: ${tool.title ?? tool.name}`,
-        }));
+        return offered.map((tool) => ({ ...tool, ...exposed(deps, upstream, tool) }));
       }),
     );
     for (const list of lists) if (list.status === 'fulfilled') tools.push(...list.value);
@@ -146,7 +165,7 @@ function buildServer(env: Env, deps: GatewayDeps): Server {
     const identity = identityOf(ctx.http?.authInfo);
     const name = request.params.name;
 
-    if (name === WHOAMI.name) {
+    if (name === WHOAMI.name && deps.mode !== 'single') {
       const services = deps.upstreams.map((u) => ({
         service: u.name,
         permissions: scopesFor(u, identity.scope),
@@ -165,7 +184,7 @@ function buildServer(env: Env, deps: GatewayDeps): Server {
       );
     }
 
-    const target = splitName(deps.upstreams, name);
+    const target = resolve(deps, name);
     if (!target) return textResult(`Unknown tool: ${name}`, true);
     const { upstream, tool } = target;
     const now = deps.now();
@@ -221,7 +240,7 @@ async function scopeCheck(
   const message = body as { method?: unknown; params?: { name?: unknown } };
   if (!has(auth.scope, TOOLS_READ, deps.upstreams)) return insufficientScope(auth, [TOOLS_READ]);
   if (message.method !== 'tools/call' || typeof message.params?.name !== 'string') return null;
-  const target = splitName(deps.upstreams, message.params.name);
+  const target = resolve(deps, message.params.name);
   if (!target) return null;
   const { tools } = await upstreamTools(env, deps, target.upstream, identity);
   const definition = tools.find((t) => t.name === target.tool);

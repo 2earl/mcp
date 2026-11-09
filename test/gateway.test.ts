@@ -245,6 +245,102 @@ describe('tool pinning', () => {
   });
 });
 
+describe('a service’s own address (/notes)', () => {
+  const notesToken = (scope: string[]) =>
+    issueToken(scope, 'user-1', 'https://app.example/client.json', `${ORIGIN}/notes`);
+
+  it('has its own metadata and challenge, naming only that service’s scopes', async () => {
+    const challenge = await call(
+      worker,
+      testEnv,
+      new Request(`${ORIGIN}/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      }),
+    );
+    expect(challenge.status).toBe(401);
+    expect(challenge.headers.get('WWW-Authenticate')).toContain(
+      'resource_metadata="https://mcp.2earl.com/.well-known/oauth-protected-resource/notes"',
+    );
+    const metadata = await call(
+      worker,
+      testEnv,
+      new Request(`${ORIGIN}/.well-known/oauth-protected-resource/notes`),
+    );
+    expect(await metadata.json()).toMatchObject({
+      resource: 'https://mcp.2earl.com/notes',
+      resource_name: 'Notes',
+      scopes_supported: ['mcp:notes.read', 'mcp:notes.write', 'mcp:notes.admin'],
+    });
+  });
+
+  it('lists only that service’s tools, as the service names them, without whoami', async () => {
+    const client = await mcpClient(worker, testEnv, notesToken(['mcp:notes.read']), '/notes');
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual(['add_note', 'delete_all', 'list_notes']);
+    const result = await client.callTool({ name: 'list_notes', arguments: {} });
+    expect(result.content).toEqual([{ type: 'text', text: 'note one' }]);
+    expect((await client.callTool({ name: 'whoami', arguments: {} })).isError).toBe(true);
+  });
+
+  it('asks for the write scope there too, and calls with it', async () => {
+    const denied = await call(
+      worker,
+      testEnv,
+      new Request(`${ORIGIN}/notes`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Authorization: `Bearer ${notesToken(['mcp:notes.read'])}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'add_note', arguments: { text: 'x' } },
+        }),
+      }),
+    );
+    expect(denied.status).toBe(403);
+    expect(denied.headers.get('WWW-Authenticate')).toContain('scope="mcp:notes.write"');
+
+    const client = await mcpClient(worker, testEnv, notesToken(['mcp:notes.write']), '/notes');
+    const result = await client.callTool({ name: 'add_note', arguments: { text: 'hi' } });
+    expect(result.content).toEqual([{ type: 'text', text: 'added: hi' }]);
+  });
+
+  it('refuses a token issued for /mcp, and /mcp refuses one issued for it', async () => {
+    const forMcp = issueToken(['mcp:notes.read']);
+    const wrong = await call(
+      worker,
+      testEnv,
+      new Request(`${ORIGIN}/notes`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Authorization: `Bearer ${forMcp}`,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      }),
+    );
+    expect(wrong.status).toBe(401);
+    const back = await call(
+      worker,
+      testEnv,
+      jsonRpc(notesToken(['mcp:notes.read']), { jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    );
+    expect(back.status).toBe(401);
+  });
+
+  it('keeps its own paths: unknown ones are 404, reserved ids are refused', async () => {
+    expect((await call(worker, testEnv, new Request(`${ORIGIN}/other`))).status).toBe(404);
+    expect(() => makeWorker([{ ...NOTES, id: 'mcp' }])).toThrow("can't be a gateway path");
+  });
+});
+
 describe('the production service list', () => {
   it('has Prompt share at its GatewayMcp binding, with the scopes login declares', () => {
     expect(UPSTREAMS).toEqual([
