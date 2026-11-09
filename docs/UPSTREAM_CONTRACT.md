@@ -50,7 +50,7 @@ export class GatewayMcp extends WorkerEntrypoint<Env> {
 The gateway's `wrangler.jsonc` binds to it:
 
 ```jsonc
-{ "binding": "PROMPT_SHARE", "service": "prompt-share", "entrypoint": "GatewayMcp" }
+{ "binding": "PROMPTSHARE", "service": "promptshare", "entrypoint": "GatewayMcp" }
 ```
 
 ## 2. Trust the identity headers only there
@@ -74,7 +74,7 @@ Rules:
 
 - **`readOnlyHint: true`** on every tool that changes nothing: it then needs `read`. Any tool
   without it needs `write`. A missing annotation fails closed.
-- A tool that needs a narrower permission names it: `_meta: { "2earl/scope": "mcp:prompts.publish" }`.
+- A tool that needs a narrower permission names it: `_meta: { "2earl/scope": "mcp:promptshare.publish" }`.
   The scope must be one of the service's own, listed in the gateway and in login (§5), or it is
   ignored.
 - Tool names: letters, digits, `_` and `-`, without `__` (the gateway's prefix separator). The
@@ -102,8 +102,8 @@ The service holds its own data, so it answers login itself, like the gateway doe
 
 | Where | What |
 |---|---|
-| login `src/services.ts`, entry `mcp` | Each scope with its consent wording, e.g. `'mcp:prompts.read': 'Read your prompts in Prompt share'` |
-| gateway `src/upstreams.ts` | `scopes: { read: 'mcp:prompts.read', write: 'mcp:prompts.write', publish: 'mcp:prompts.publish' }` |
+| login `src/services.ts`, entry `mcp` | Each scope with its consent wording, e.g. `'mcp:promptshare.read': 'Read your prompts and public prompts in Prompt share'` |
+| gateway `src/upstreams.ts` | `scopes: { read: 'mcp:promptshare.read', write: 'mcp:promptshare.write', state: 'mcp:promptshare.state' }` |
 
 The `mcp:` prefix means "through the gateway" (the token's audience is the gateway). The service's
 own website, if it has one, signs in with login as its own service with its own scopes.

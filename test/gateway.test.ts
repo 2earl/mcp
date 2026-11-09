@@ -12,6 +12,7 @@ import {
   mcpClient,
   resetDatabase,
 } from './helpers';
+import { UPSTREAMS } from '../src/upstreams';
 
 let worker: ReturnType<typeof makeWorker>;
 let upstream: ReturnType<typeof fakeUpstream>;
@@ -47,7 +48,9 @@ describe('the endpoint', () => {
     expect(challenge).toContain(
       'resource_metadata="https://mcp.2earl.com/.well-known/oauth-protected-resource/mcp"',
     );
-    expect(challenge).toContain('scope="mcp:tools.read"');
+    expect(challenge).toContain(
+      'scope="mcp:tools.read mcp:notes.read mcp:notes.write mcp:notes.admin"',
+    );
   });
 
   it('publishes RFC 9728 metadata naming login as the authorization server', async () => {
@@ -60,7 +63,8 @@ describe('the endpoint', () => {
     expect(await response.json()).toMatchObject({
       resource: 'https://mcp.2earl.com/mcp',
       authorization_servers: ['https://login.2earl.com'],
-      scopes_supported: ['mcp:tools.read'],
+      // Every scope, so an assistant can ask for all of them at once.
+      scopes_supported: ['mcp:tools.read', 'mcp:notes.read', 'mcp:notes.write', 'mcp:notes.admin'],
     });
   });
 
@@ -238,6 +242,26 @@ describe('tool pinning', () => {
     expect(after).not.toContain('notes__add_note');
     expect(after).toContain('notes__list_notes');
     expect(await count('audit_events', "event = 'tool.held'")).toBe(4);
+  });
+});
+
+describe('the production service list', () => {
+  it('has Prompt share at its GatewayMcp binding, with the scopes login declares', () => {
+    expect(UPSTREAMS).toEqual([
+      {
+        id: 'promptshare',
+        name: 'Prompt share',
+        binding: 'PROMPTSHARE',
+        trust: 'first-party',
+        scopes: {
+          read: 'mcp:promptshare.read',
+          write: 'mcp:promptshare.write',
+          state: 'mcp:promptshare.state',
+        },
+      },
+    ]);
+    // Every service's binding exists in wrangler.jsonc.
+    for (const upstream of UPSTREAMS) expect(upstream.binding in env).toBe(true);
   });
 });
 

@@ -66,7 +66,9 @@ export function createWorker(deps: {
         bearer_methods_supported: ['header'],
         resource_name: '2earl MCP gateway',
       },
-      requiredScopes: [TOOLS_READ],
+      // Every scope, so an assistant can ask for all of them at its first sign-in; the user
+      // chooses on login's consent page. Step-up (403) still covers clients that ask for less.
+      requiredScopes: [TOOLS_READ, ...deps.upstreams.flatMap((u) => Object.values(u.scopes))],
       validateToken: deps.validator,
       handler: gateway,
     });
