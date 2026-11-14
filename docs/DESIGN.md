@@ -29,7 +29,7 @@ a later phase (§9). Nothing in M1 depends on them.
 
 | # | Decision | By |
 |---|---|---|
-| G1 | Own repository `2earl/mcp`, public, AGPL-3.0, same protections as login | Owner, 2026-11-09 |
+| G1 | Own repository `2earl/mcp`, private, proprietary (public under AGPL-3.0 until 2026-11-14), same protections as login | Owner, 2026-11-09; 2026-11-14 |
 | G2 | Both proxied services and own tools | Owner, 2026-11-09 |
 | G3 | Resource `https://mcp.2earl.com/mcp`; tokens from login only, validated over a Service Binding | Owner, 2026-11-09 |
 | G4 | Deleting a 2earl account deletes the user's data in the gateway **and in every service behind it** | Owner, 2026-11-09 |
