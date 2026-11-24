@@ -279,6 +279,29 @@ describe('opening an address in a browser', () => {
     expect(await missing.text()).toContain('There’s nothing at this address');
     expect(await (await visit('/nope', '*/*')).text()).toBe('Not found');
   });
+
+  it('speaks Turkish to a Turkish browser or with ?lang=tr, and keeps out of search results', async () => {
+    const turkish = await call(
+      worker,
+      testEnv,
+      new Request(`${ORIGIN}/mcp`, {
+        headers: { Accept: 'text/html', 'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.5' },
+      }),
+    );
+    expect(turkish.status).toBe(401);
+    expect(turkish.headers.get('Content-Language')).toBe('tr');
+    expect(turkish.headers.get('X-Robots-Tag')).toBe('noindex, nofollow');
+    const page = await turkish.text();
+    expect(page).toContain('<html lang="tr">');
+    expect(page).toContain('Bu adresi asistanınıza ekleyin');
+    expect(page).toContain('href="https://2earl.com/tr/privacy"');
+    expect(page).toContain('<code>https://mcp.2earl.com/mcp</code>');
+    const chosen = await (await visit('/notes?lang=tr')).text();
+    expect(chosen).toContain('Yapay zekâ asistanınız için Notes');
+    expect(await (await visit('/nope?lang=tr')).text()).toContain('Bu adreste bir şey yok');
+    const robots = await call(worker, testEnv, new Request(`${ORIGIN}/robots.txt`));
+    expect(await robots.text()).toBe('User-agent: *\nDisallow: /\n');
+  });
 });
 
 describe('prompts', () => {

@@ -5,7 +5,7 @@ import {
 } from '@cloudflare/workers-oauth-provider';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { AUDIT_RETENTION_SECONDS, audit } from './audit';
-import { PAGE_CSP, endpointPage, isBrowserVisit, notFoundPage } from './browser-page';
+import { PAGE_CSP, endpointPage, isBrowserVisit, notFoundPage, pageLocale } from './browser-page';
 import { createGateway, type GrantProps } from './gateway';
 import { TOOLS_READ } from './scopes';
 import { UPSTREAMS, type Upstream } from './upstreams';
@@ -131,13 +131,22 @@ export function createWorker(deps: {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
     if (url.pathname === '/healthz') return withHeaders(new Response('ok'), SECURITY_HEADERS);
+    // Only 2earl.com is for search engines (docs/DESIGN.md §3.2).
+    if (url.pathname === '/robots.txt') {
+      return withHeaders(
+        new Response('User-agent: *\nDisallow: /\n', {
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        }),
+        SECURITY_HEADERS,
+      );
+    }
     if (url.pathname === '/') {
       return withHeaders(Response.redirect('https://2earl.com', 302), SECURITY_HEADERS);
     }
     const endpoint = endpointFor(url.pathname);
     if (!endpoint) {
       const notFound = isBrowserVisit(request)
-        ? new Response(notFoundPage(), {
+        ? new Response(notFoundPage(pageLocale(request), url.pathname), {
             status: 404,
             headers: {
               'Content-Type': 'text/html; charset=utf-8',
@@ -151,8 +160,13 @@ export function createWorker(deps: {
     // A person who opened the address in a browser: the same answer (status, challenge
     // headers), with a page explaining what the address is for instead of a JSON error.
     if (response.status === 401 && url.pathname === endpoint.path && isBrowserVisit(request)) {
-      const page = new Response(endpointPage(`${url.origin}${endpoint.path}`, endpoint), response);
+      const page = new Response(
+        endpointPage(`${url.origin}${endpoint.path}`, endpoint, pageLocale(request)),
+        response,
+      );
+      page.headers.set('Content-Language', pageLocale(request));
       page.headers.set('Content-Type', 'text/html; charset=utf-8');
+      page.headers.set('X-Robots-Tag', 'noindex, nofollow');
       page.headers.set('Content-Security-Policy', PAGE_CSP);
       page.headers.delete('Content-Length');
       return withHeaders(page, { ...SECURITY_HEADERS, ...CORS_HEADERS });
