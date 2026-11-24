@@ -110,6 +110,12 @@ account. MCP clients never send that combination (they ask for JSON or an event 
 token), so their answers, and OAuth discovery, are unchanged. The page has no scripts and loads
 nothing from elsewhere (its own CSP). An unknown path gets a page that names the real addresses.
 
+The pages are in English and Turkish: `?lang=` chooses, otherwise the browser's `Accept-Language`;
+the footer switches, and links to 2earl.com and login.2earl.com keep the language. The words are
+in `WORDS` in `src/browser-page.ts` (two small pages, so no catalog); adding a language is one more
+entry there. They carry `X-Robots-Tag: noindex, nofollow`, and `/robots.txt` disallows everything:
+only 2earl.com is for search engines. MCP answers and tool descriptions stay English.
+
 ## 4. Permissions
 
 The owner set the rule: each service has its own permission set, and more apps will follow. The
