@@ -1,8 +1,9 @@
 terraform {
   required_version = ">= 1.10.0"
 
-  # State and runs live in HCP Terraform. The workspace is VCS-driven from this repo
-  # (working directory "infra", manual apply).
+  # State lives in HCP Terraform (workspace in local execution mode); plans and applies run in
+  # .github/workflows/infra.yml. An authorised operator can also plan from a laptop after
+  # `terraform login`.
   cloud {
     organization = "2earl"
     workspaces {
